@@ -1,7 +1,3 @@
-"""
-adaptive_lora: A package for per-epoch adaptive LoRA rank allocation 
-based on Block Influence (BI) scores, compatible with Hugging Face.
-"""
 
 __version__ = "0.1.0"
 

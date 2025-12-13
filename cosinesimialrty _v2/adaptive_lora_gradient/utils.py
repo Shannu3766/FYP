@@ -8,9 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def get_lora_layers(model: torch.nn.Module) -> Dict[str, LoraLayer]:
-    """
-    Finds all modules in the model that are instances of peft.tuners.lora.LoraLayer.
-    """
+
     return {
         name: module
         for name, module in model.named_modules()
@@ -23,9 +21,7 @@ def save_epoch_log(
     ranks: Dict[str, int], 
     scores: Dict[str, float]
 ):
-    """
-    Appends the rank allocation results for the current epoch to a CSV log file.
-    """
+
     log_dir = os.path.dirname(log_file)
     if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
@@ -58,11 +54,7 @@ def resize_lora_layer_svd(
     adapter_name: str = "default",
     **kwargs
 ):
-    """
-    Resizes a LoRA layer using SVD to preserve the learned weights.
-    """
-    
-    # 1. Capture current weights and scaling
+
     with torch.no_grad():
         if adapter_name not in layer.lora_A:
             return
@@ -71,18 +63,17 @@ def resize_lora_layer_svd(
         old_alpha = layer.lora_alpha[adapter_name]
         old_scaling = old_alpha / old_r
         
-        # Get weights
+
         A_old = layer.lora_A[adapter_name].weight
         B_old = layer.lora_B[adapter_name].weight
         
-        # Compute effective weight
+
         W_delta = (B_old @ A_old) * old_scaling
         
-        # 2. Perform SVD
         dtype = A_old.dtype
         U, S, Vh = torch.linalg.svd(W_delta.float(), full_matrices=False)
         
-        # 3. Truncate to new rank
+
         k = new_rank
         k = min(k, S.size(0))
         
@@ -90,12 +81,10 @@ def resize_lora_layer_svd(
         S_k = S[:k]
         Vh_k = Vh[:k, :]
         
-        # 4. Calculate new A and B
         sqrt_S = torch.diag(torch.sqrt(S_k))
         B_new = (U_k @ sqrt_S).to(dtype)
         A_new = (sqrt_S @ Vh_k).to(dtype)
         
-        # 5. Adjust for NEW scaling
         new_scaling = lora_alpha / new_rank
         scale_correction = 1.0 / (new_scaling ** 0.5)
         
