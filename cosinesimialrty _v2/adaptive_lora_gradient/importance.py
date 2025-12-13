@@ -33,7 +33,6 @@ def compute_gradient_importance_scores(
         )
 
     accumulated_scores = {name: 0.0 for name in lora_layers.keys()}
-    
     current_batch_activations = {}
 
     def make_hook(name):
@@ -61,15 +60,14 @@ def compute_gradient_importance_scores(
         total_steps = min(num_batches, total_steps)
 
     batches_processed = 0
-
     model.zero_grad(set_to_none=True)
     
     with torch.enable_grad():
         for step, batch in tqdm(enumerate(dataloader), total=total_steps, desc="Computing Importance", leave=False):
-            
             if num_batches is not None and step >= num_batches:
                 break
 
+            # Move batch to device
             if hasattr(batch, "items"):
                 batch_input = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
                 outputs = model(**batch_input)
@@ -79,6 +77,7 @@ def compute_gradient_importance_scores(
             else: 
                 outputs = model(batch.to(device))
 
+            # Get loss
             if isinstance(outputs, dict) and "loss" in outputs:
                 loss = outputs["loss"]
             elif hasattr(outputs, "loss"):
@@ -89,6 +88,8 @@ def compute_gradient_importance_scores(
                 continue
 
             loss.backward()
+
+            # Compute Importance: Mean(Abs(Grad * Act))
             for name, act in current_batch_activations.items():
                 if act.grad is None:
                     continue
@@ -96,14 +97,11 @@ def compute_gradient_importance_scores(
                 a_flat = act.detach().view(-1, act.size(-1))
                 g_flat = act.grad.detach().view(-1, act.size(-1))
                 importance = (a_flat * g_flat).sum(dim=1).abs().mean().item()
-                
-
                 accumulated_scores[name] += importance
 
             current_batch_activations.clear()
             model.zero_grad(set_to_none=True)
             batches_processed += 1
-            
 
     for h in hooks:
         h.remove()
@@ -111,9 +109,8 @@ def compute_gradient_importance_scores(
     if batches_processed == 0:
         return {k: 0.0 for k in lora_layers.keys()}
 
-
+    # Normalize scores
     final_scores = {k: v / batches_processed for k, v in accumulated_scores.items()}
-
     s_vals = torch.tensor(list(final_scores.values()), dtype=torch.float32)
     eps = 1e-8
     s_min, s_max = s_vals.min(), s_vals.max()
