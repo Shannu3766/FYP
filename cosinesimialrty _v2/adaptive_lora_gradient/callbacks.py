@@ -16,9 +16,14 @@ class AdaptiveLoRACallback(TrainerCallback):
         tau: float = 1.0,
         log_path: str = "./logs",
         verbose: bool = True,
-        lora_alpha: int = 4,
+        lora_alpha: int = 16, 
         validate_batch_size: int = 8,
-        min_rank: int = 4
+        min_rank: int = 4,
+        # --- MODIFIED DEFAULTS FOR 3-EPOCH RUN ---
+        score_smoothing_beta: float = 0.85, 
+        update_interval: int = 1,           # Changed to 1 for faster updates
+        warmup_epochs: int = 0,             # Changed to 0 to start immediately
+        cooldown_epochs: int = 1            # Changed to 1 to freeze only the last epoch
     ):
         self.total_rank = total_rank
         self.val_dataloader = val_dataloader
@@ -56,18 +61,34 @@ class AdaptiveLoRACallback(TrainerCallback):
             if self.verbose:
                 print("⚠️ No LoRA layers or BI scores found. Skipping rank update.")
             return
-        if self.verbose:
-            print("Allocating new ranks based on BI scores...")
-        new_ranks = allocate_ranks_bi(scores, self.total_rank, self.tau, min_rank=self.min_rank)
 
-        if self.verbose:
-            print("Applying new ranks to LoRA modules for this epoch...")
+        # --- 3. APPLY EMA SMOOTHING ---
+        if self.ema_scores is None:
+            self.ema_scores = raw_scores
+        else:
+            for name, score in raw_scores.items():
+                prev = self.ema_scores.get(name, 0.0)
+                self.ema_scores[name] = (
+                    self.score_smoothing_beta * prev + 
+                    (1.0 - self.score_smoothing_beta) * score
+                )
+        
+        # Use smoothed scores for allocation
+        final_scores = self.ema_scores
 
+        # --- 4. ALLOCATE RANKS ---
+        new_ranks = allocate_ranks_bi(
+            final_scores, 
+            self.total_rank, 
+            self.tau, 
+            min_rank=self.min_rank
+        )
+
+        # --- 5. APPLY UPDATES (SVD) & PRINT ---
         lora_layers = get_lora_layers(model)
         config = model.peft_config.get("default")
-        if not config:
-            logger.error("❌ PEFT config not found. Skipping update.")
-            return
+        
+        # Prepare kwargs for SVD resize
         update_kwargs = {
             "init_lora_weights": getattr(config, "init_lora_weights", True),
             "use_rslora": getattr(config, "use_rslora", False),
@@ -77,20 +98,27 @@ class AdaptiveLoRACallback(TrainerCallback):
             "qalora_group_size": getattr(config, "qalora_group_size", 64),
         }
 
+        changes_count = 0
+        
+        if self.verbose:
+            print(f"Rank Updates (Epoch {epoch}):")
+
         for name, layer in lora_layers.items():
             new_rank = new_ranks.get(name)
             if new_rank is None:
                 continue
 
             current_rank = layer.r.get("default", 0)
-            score = scores.get(name, 0.0)
+            score = final_scores.get(name, 0.0)
 
+            # --- YOUR REQUESTED PRINT LOGIC ---
             if current_rank != new_rank:
                 if self.verbose:
                     print(f"  - {name}: r={current_rank} → {new_rank} (Score: {score:.4f})")
             else:
                 if self.verbose:
                     print(f"  - {name}: r={new_rank} (Unchanged, Score: {score:.4f})")
+            # ----------------------------------
 
             if current_rank != new_rank:
                 lora_dropout_p = 0.0
